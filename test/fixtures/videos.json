@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "createdAt": "2026-09-11T19:00:57.313Z",
+  "updatedAt": "2026-10-11T17:00:57.313Z",
+  "videos": [
+    {
+      "id": "a966F5tgpNs",
+      "title": "Jesus gibt den perfekten Raphinha-Ersatz: FC Barcelona - FC Getafe | 8. Spieltag | LALIGA | DAZN",
+      "published": "2026-10-11T17:00:57.313Z",
+      "firstSeen": "2026-10-11T17:00:57.313Z"
+    },
+    {
+      "id": "openOLD0001",
+      "title": "Katalanische Tormaschine rollt weiter: FC Sevilla - FC Barcelona | 7. Spieltag | LALIGA | DAZN",
+      "published": "2026-10-04T19:00:57.313Z",
+      "firstSeen": "2026-10-04T19:00:57.313Z"
+    },
+    {
+      "id": "baseline001",
+      "title": "Adeyemi-Traumsolo & Raphinha zaubert: FC Barcelona - Santander | 6. Spieltag | LALIGA | DAZN",
+      "published": "2026-09-27T19:00:57.313Z",
+      "firstSeen": "2026-09-27T19:00:57.313Z",
+      "baseline": true
+    },
+    {
+      "id": "baseline002",
+      "title": "Traum-Solo! Adeyemi weiter on fire: Levante - FC Barcelona | 5. Spieltag | LaLiga | DAZN Highlights",
+      "published": "2026-09-20T19:00:57.313Z",
+      "firstSeen": "2026-09-20T19:00:57.313Z",
+      "baseline": true
+    },
+    {
+      "id": "baseline003",
+      "title": "Guadalajara - FC Barcelona | 3. Runde | Copa del Rey | DAZN Highlights",
+      "published": "2026-09-13T19:00:57.313Z",
+      "firstSeen": "2026-09-13T19:00:57.313Z",
+      "baseline": true
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+name: Check for new recaps
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: "Send a test notification"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    env:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Check DAZN Fußball for new Barça recaps
+        id: check
+        run: node scripts/check.mjs
+
+      - name: Commit updated data
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/videos.json
+          git commit -m "data: new recaps"
+          git pull --rebase
+          git push
+
+      # GitHub disables scheduled workflows after 60 days without repository activity
+      # (e.g. during the summer break), so keep the repo alive with a monthly heartbeat.
+      - name: Keepalive heartbeat
+        if: steps.check.outputs.changed != 'true'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 30 * 24 * 3600 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            date -u +%FT%TZ > data/heartbeat.txt
+            git add data/heartbeat.txt
+            git commit -m "chore: keepalive"
+            git pull --rebase
+            git push
+          fi
+
+      - name: Test notification
+        if: github.event_name == 'workflow_dispatch' && inputs.test_notification
+        run: node scripts/check.mjs --test-notify
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.changed == 'true' || github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/build.mjs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4
