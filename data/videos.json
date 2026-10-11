@@ -1,12 +1,18 @@
 {
   "version": 1,
   "createdAt": "2026-10-11T19:19:27.695Z",
-  "updatedAt": "2026-10-11T19:19:27.695Z",
+  "updatedAt": "2026-10-11T19:24:20.289Z",
   "videos": [
     {
       "id": "a966F5tgpNs",
       "title": "Jesus gibt den perfekten Raphinha-Ersatz: FC Barcelona - FC Getafe | 8. Spieltag | LALIGA | DAZN",
       "published": "2026-10-10T18:59:32.000Z",
+      "firstSeen": "2026-10-11T19:19:27.695Z"
+    },
+    {
+      "id": "-9AUys0r3xE",
+      "title": "Katalanische Tormaschine rollt weiter: FC Sevilla - FC Barcelona | 7. Spieltag | LALIGA | DAZN",
+      "published": "2026-09-19T21:24:40.000Z",
       "firstSeen": "2026-10-11T19:19:27.695Z",
       "baseline": true
     }
