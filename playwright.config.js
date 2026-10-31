@@ -9,7 +9,8 @@ export default defineConfig({
   use: {
     ...devices["Pixel 7"],
     // Locally use the installed Chrome (no browser download needed); CI installs Playwright's Chromium.
-    channel: process.env.CI ? undefined : "chrome",
+    // CI needs its full build ("chromium"): the default headless shell never shows notifications.
+    channel: process.env.CI ? "chromium" : "chrome",
     baseURL: `http://localhost:${PORT}/`,
     serviceWorkers: "allow",
   },
