@@ -2,15 +2,19 @@ name: Check for new recaps
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Once a day; the morning notification goes out with this run. Cron is in UTC:
+    # 05:37 UTC is 06:37 in Berlin in winter and 07:37 in summer. Off the full hour, when GitHub is busiest.
+    - cron: "37 5 * * *"
+  # Pushes only deploy the app; the watcher runs on the schedule and on demand.
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      test_notification:
-        description: "Send a test notification"
-        type: boolean
-        default: false
+      mode:
+        description: "check: look for recaps and notify · quiet: look without notifying (the app uses this) · test-notification: send a test"
+        type: choice
+        options: [check, quiet, test-notification]
+        default: check
 
 permissions:
   contents: write
@@ -23,12 +27,14 @@ concurrency:
 
 jobs:
   check:
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       changed: ${{ steps.check.outputs.changed }}
     env:
-      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      PUSH_SUBSCRIPTION: ${{ secrets.PUSH_SUBSCRIPTION }}
       APP_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
     steps:
       - uses: actions/checkout@v5
@@ -40,8 +46,9 @@ jobs:
         run: npm test
 
       - name: Check DAZN Fußball for new Barça recaps
+        if: inputs.mode != 'test-notification'
         id: check
-        run: node scripts/check.mjs
+        run: node scripts/check.mjs ${{ inputs.mode == 'quiet' && '--quiet' || '' }}
 
       - name: Commit updated data
         if: steps.check.outputs.changed == 'true'
@@ -56,7 +63,7 @@ jobs:
       # GitHub disables scheduled workflows after 60 days without repository activity
       # (e.g. during the summer break), so keep the repo alive with a monthly heartbeat.
       - name: Keepalive heartbeat
-        if: steps.check.outputs.changed != 'true'
+        if: github.event_name == 'schedule' && steps.check.outputs.changed != 'true'
         run: |
           last=$(git log -1 --format=%ct)
           if [ $(( $(date +%s) - last )) -gt $(( 30 * 24 * 3600 )) ]; then
@@ -70,12 +77,13 @@ jobs:
           fi
 
       - name: Test notification
-        if: github.event_name == 'workflow_dispatch' && inputs.test_notification
+        if: inputs.mode == 'test-notification'
         run: node scripts/check.mjs --test-notify
 
   deploy:
     needs: check
-    if: needs.check.outputs.changed == 'true' || github.event_name != 'schedule'
+    # After a push (the check job is skipped then) or when the watcher found something.
+    if: ${{ !failure() && !cancelled() && (github.event_name == 'push' || needs.check.outputs.changed == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

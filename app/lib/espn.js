@@ -3,6 +3,17 @@
 export const BARCA_ESPN_ID = "83";
 export const STANDINGS_URL = "https://site.api.espn.com/apis/v2/sports/soccer/esp.1/standings";
 export const FIXTURES_URL = `https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/${BARCA_ESPN_ID}/schedule?fixture=true`;
+export const RESULTS_URL = `https://site.api.espn.com/apis/site/v2/sports/soccer/all/teams/${BARCA_ESPN_ID}/schedule`;
+
+/** The most recent completed match from the results endpoint: { id, date } or null. */
+export function latestResult(json) {
+  let latest = null;
+  for (const ev of json?.events ?? []) {
+    if (ev.competitions?.[0]?.status?.type?.completed !== true || !ev.date) continue;
+    if (!latest || ev.date > latest.date) latest = { id: ev.id, date: ev.date };
+  }
+  return latest;
+}
 
 const stat = (entry, name) => {
   const s = entry.stats?.find((x) => x.name === name);

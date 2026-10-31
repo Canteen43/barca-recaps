@@ -1,29 +1,26 @@
-// Push notifications via ntfy.sh (free, no account; install the ntfy Android app and subscribe to the topic).
+// Builds the Web Push payload for new recaps. The service worker (app/sw.js) turns it into a notification
+// and only ever opens URLs it builds itself from the video IDs, never URLs from the payload.
 import { parseRecapTitle } from "../../app/lib/parse.js";
 
-export function buildNotification(video, { topic, appUrl }) {
+const line = (video) => {
   const info = parseRecapTitle(video.title);
-  const matchup = info ? `${info.home} – ${info.away}` : video.title;
-  const meta = info ? [info.competition, info.round].filter(Boolean).join(" · ") : "";
-  const youtube = `https://www.youtube.com/watch?v=${video.id}`;
-  const msg = {
-    topic,
-    title: "New Barça recap",
-    // No teaser and no thumbnail: those often spoil the result.
-    message: meta ? `${matchup}\n${meta}` : matchup,
-    tags: ["soccer"],
-    priority: 4,
-    click: appUrl ? `${appUrl.replace(/\/?$/, "/")}#/v/${video.id}` : youtube,
-    actions: [{ action: "view", label: "▶ YouTube", url: youtube, clear: true }],
-  };
-  return msg;
-}
+  return info ? `${info.home} – ${info.away}` : video.title;
+};
 
-export async function sendNotification(msg, { server = "https://ntfy.sh", fetchImpl = fetch } = {}) {
-  const res = await fetchImpl(server, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(msg),
-  });
-  if (!res.ok) throw new Error(`ntfy responded ${res.status}: ${await res.text()}`);
+export function buildNotification(videos) {
+  if (videos.length === 1) {
+    const info = parseRecapTitle(videos[0].title);
+    const meta = info ? [info.competition, info.round].filter(Boolean).join(" · ") : "";
+    return {
+      title: "New Barça recap",
+      // No teaser and no thumbnail: those often spoil the result.
+      body: meta ? `${line(videos[0])}\n${meta}` : line(videos[0]),
+      ids: [videos[0].id],
+    };
+  }
+  return {
+    title: `${videos.length} new Barça recaps`,
+    body: videos.map(line).join("\n"),
+    ids: videos.map((v) => v.id),
+  };
 }

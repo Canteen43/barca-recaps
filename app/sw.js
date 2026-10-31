@@ -10,6 +10,8 @@ const SHELL_FILES = [
   "lib/parse.js",
   "lib/watchlist.js",
   "lib/espn.js",
+  "lib/push.js",
+  "lib/checks.js",
   "manifest.webmanifest",
   "icons/icon.svg",
   "icons/icon-192.png",
@@ -43,6 +45,53 @@ async function networkFirst(request) {
     throw err;
   }
 }
+
+// ---------- Web Push ----------
+// Only the watcher holding the VAPID private key can push here. Even so, the payload is treated as
+// untrusted text: taps only ever open this app or YouTube, with URLs built here from validated video IDs.
+const VIDEO_ID = /^[\w-]{11}$/;
+const scope = () => self.registration.scope;
+
+self.addEventListener("push", (event) => {
+  let msg = {};
+  try {
+    msg = event.data?.json() ?? {};
+  } catch {
+    /* not JSON: show the generic notification */
+  }
+  const ids = (Array.isArray(msg.ids) ? msg.ids : []).filter((id) => typeof id === "string" && VIDEO_ID.test(id));
+  event.waitUntil(
+    self.registration.showNotification(String(msg.title || "New Barça recap").slice(0, 80), {
+      body: String(msg.body || "").slice(0, 300),
+      icon: "icons/icon-192.png",
+      tag: "recaps",
+      data: { ids },
+      actions: ids.length === 1 ? [{ action: "youtube", title: "▶ YouTube" }] : [],
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const ids = event.notification.data?.ids ?? [];
+  const url =
+    event.action === "youtube" && ids.length === 1
+      ? `https://www.youtube.com/watch?v=${ids[0]}`
+      : ids.length === 1
+        ? `${scope()}#/v/${ids[0]}`
+        : scope();
+  event.waitUntil(
+    (async () => {
+      if (!url.startsWith(scope())) return self.clients.openWindow(url);
+      const open = (await self.clients.matchAll({ type: "window", includeUncontrolled: true })).find((c) => c.url.startsWith(scope()));
+      if (open) {
+        await open.focus();
+        return open.navigate(url).catch(() => self.clients.openWindow(url));
+      }
+      return self.clients.openWindow(url);
+    })(),
+  );
+});
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;

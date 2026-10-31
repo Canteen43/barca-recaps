@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { normalizeStandings, normalizeFixtures } from "../../app/lib/espn.js";
+import { normalizeStandings, normalizeFixtures, latestResult } from "../../app/lib/espn.js";
 
 const load = (f) => JSON.parse(readFileSync(new URL(`../fixtures/${f}`, import.meta.url), "utf8"));
 
@@ -26,7 +26,19 @@ test("normalizes upcoming fixtures across competitions", () => {
   assert.ok(list.every((f) => f.home.id === "83" || f.away.id === "83"));
 });
 
+test("finds the most recent completed match", () => {
+  const json = load("espn-results.json");
+  const latest = latestResult(json);
+  assert.ok(latest.id && latest.date);
+  const completed = json.events.filter((e) => e.competitions[0].status.type.completed).map((e) => e.date);
+  assert.equal(latest.date, completed.sort().at(-1));
+  // A match that hasn't finished doesn't count.
+  const live = { id: "live", date: "2099-01-01T00:00Z", competitions: [{ status: { type: { completed: false } } }] };
+  assert.equal(latestResult({ events: [...json.events, live] }).id, latest.id);
+});
+
 test("tolerates empty or broken payloads", () => {
   assert.deepEqual(normalizeStandings({}).rows, []);
   assert.deepEqual(normalizeFixtures(null), []);
+  assert.equal(latestResult(null), null);
 });

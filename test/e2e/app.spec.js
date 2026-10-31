@@ -162,3 +162,52 @@ test("manifest and icons are installable", async ({ page, request }) => {
     expect(res.headers()["content-type"]).toBe("image/png");
   }
 });
+
+// Delivers a push message straight to the service worker (no push service involved).
+async function deliverPush(page, context, data) {
+  const cdp = await context.newCDPSession(page);
+  const registration = new Promise((resolve) =>
+    cdp.on("ServiceWorker.workerRegistrationUpdated", ({ registrations }) => registrations[0] && resolve(registrations[0])),
+  );
+  await cdp.send("ServiceWorker.enable");
+  const { registrationId, scopeURL } = await registration;
+  await cdp.send("ServiceWorker.deliverPushMessage", { origin: new URL(scopeURL).origin, registrationId, data: JSON.stringify(data) });
+  return page.evaluate(async () => {
+    const reg = await navigator.serviceWorker.ready;
+    for (let i = 0; i < 50; i++) {
+      const list = await reg.getNotifications();
+      if (list.length) return list.map((n) => ({ title: n.title, body: n.body, data: n.data, actions: n.actions.map((a) => a.action) }));
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return [];
+  });
+}
+
+test("push shows a spoiler-free notification for the recap", async ({ page, context }) => {
+  await context.grantPermissions(["notifications"]);
+  await page.goto("./");
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  const [n] = await deliverPush(page, context, { title: "New Barça recap", body: "FC Barcelona – FC Getafe\nLaLiga · 8. Spieltag", ids: ["a966F5tgpNs"] });
+  expect(n.title).toBe("New Barça recap");
+  expect(n.body).toContain("FC Getafe");
+  expect(n.data.ids).toEqual(["a966F5tgpNs"]);
+  expect(n.actions).toEqual(["youtube"]);
+});
+
+test("push payload can't smuggle in links", async ({ page, context }) => {
+  await context.grantPermissions(["notifications"]);
+  await page.goto("./");
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  const [n] = await deliverPush(page, context, { title: "Win a prize", ids: ["https://evil.example/x", "../../a"], url: "https://evil.example" });
+  expect(n.data).toEqual({ ids: [] }); // the tap then opens just the app
+  expect(n.actions).toEqual([]);
+});
+
+test("settings explain notifications and the late-night check", async ({ page }) => {
+  await page.goto("./");
+  await page.locator("#settings-btn").click();
+  const sheet = page.locator("#sheet");
+  await expect(sheet.locator("#push-box")).toContainText(/Enable notifications|Not set up yet/);
+  // Running on localhost, not GitHub Pages: no repo to start the workflow in.
+  await expect(sheet.locator("#check-box")).toContainText("Only available in the app deployed on GitHub Pages");
+});

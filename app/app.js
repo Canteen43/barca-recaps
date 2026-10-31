@@ -1,5 +1,7 @@
 import { enrich, partition, youtubeHref, youtubeUrl, isWatched } from "./lib/watchlist.js";
-import { normalizeStandings, normalizeFixtures, STANDINGS_URL, FIXTURES_URL } from "./lib/espn.js";
+import { normalizeStandings, normalizeFixtures, latestResult, STANDINGS_URL, FIXTURES_URL, RESULTS_URL } from "./lib/espn.js";
+import { VAPID_PUBLIC_KEY, keyBytes } from "./lib/push.js";
+import { repoFromLocation, recapDue, mayAutoCheck, nextLog } from "./lib/checks.js";
 
 // ---------- persistence (localStorage can throw or be empty; never rely on it blindly) ----------
 const storage = {
@@ -19,7 +21,8 @@ const storage = {
     }
   },
 };
-const K = { watched: "barca:watched", settings: "barca:settings", espn: "barca:espn" };
+const K = { watched: "barca:watched", settings: "barca:settings", espn: "barca:espn", token: "barca:ghToken", checkLog: "barca:checkLog" };
+const repo = repoFromLocation(location);
 
 const state = {
   videos: [],
@@ -34,6 +37,7 @@ const state = {
   showAllWatched: false,
   tableRevealed: false,
   lastLoad: 0,
+  checking: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -96,7 +100,189 @@ async function refresh() {
   btn.classList.add("spinning");
   state.lastLoad = Date.now();
   await Promise.all([loadVideos().then(render), loadEspn().then(render)]);
-  btn.classList.remove("spinning");
+  if (!state.checking) btn.classList.remove("spinning");
+  maybeAutoCheck();
+}
+
+// ---------- on-demand check via GitHub Actions ----------
+// The watcher runs once a day. With a GitHub token (Actions access to this repo only, stored on this
+// device) the app can start it right away, e.g. late at night after a match.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function github(method, path, body) {
+  const res = await fetch(`https://api.github.com/repos/${repo.owner}/${repo.repo}/${path}`, {
+    method,
+    cache: "no-store",
+    headers: {
+      Authorization: `Bearer ${storage.get(K.token, "")}`,
+      Accept: "application/vnd.github+json",
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) throw new Error("the GitHub token is invalid or expired");
+  if (res.status === 403 || res.status === 404) throw new Error("the GitHub token has no Actions access to this repo");
+  if (!res.ok) throw new Error(`GitHub responded ${res.status}`);
+  return res.status === 204 ? null : res.json().catch(() => null);
+}
+
+/** Starts the workflow and waits for it to finish (including the deploy). Returns the run. */
+async function runWorkflow(mode) {
+  const since = Date.now() - 15_000; // tolerate clock skew
+  await github("POST", "actions/workflows/check.yml/dispatches", { ref: "main", inputs: { mode } });
+  const deadline = Date.now() + 8 * 60_000;
+  while (Date.now() < deadline) {
+    await sleep(10_000);
+    const { workflow_runs: runs = [] } = (await github("GET", "actions/workflows/check.yml/runs?event=workflow_dispatch&per_page=5")) ?? {};
+    const run = runs.find((r) => new Date(r.created_at).getTime() >= since);
+    if (run?.status === "completed") {
+      if (run.conclusion !== "success") throw new Error(`the run ended with "${run.conclusion}"`);
+      return run;
+    }
+  }
+  throw new Error("the run is taking unusually long, try again later");
+}
+
+async function checkNow() {
+  if (state.checking) return;
+  state.checking = true;
+  const btn = $("#refresh-btn");
+  btn.classList.add("spinning");
+  toast("Looking for new recaps… (takes about 2 minutes)");
+  const before = new Set(state.videos.map((v) => v.id));
+  try {
+    await runWorkflow("quiet");
+    const countNew = () => state.videos.filter((v) => !before.has(v.id)).length;
+    await loadVideos();
+    // GitHub Pages can lag a few seconds behind the deploy.
+    if (!countNew()) await sleep(15_000).then(loadVideos);
+    render();
+    const n = countNew();
+    toast(n ? `${n} new recap${n > 1 ? "s" : ""} found` : "No new recap yet. DAZN usually needs about 35 minutes after full time.");
+  } catch (err) {
+    toast(`Check failed: ${err.message}`);
+  } finally {
+    state.checking = false;
+    btn.classList.remove("spinning");
+  }
+}
+
+/** Starts a check by itself only when a match ended recently and its recap isn't here yet. */
+async function maybeAutoCheck() {
+  if (!repo || !storage.get(K.token, "") || state.checking || state.videosError) return;
+  let match;
+  try {
+    const res = await fetch(RESULTS_URL);
+    if (!res.ok) return;
+    match = latestResult(await res.json());
+  } catch {
+    return;
+  }
+  if (!recapDue(match, state.videos)) return;
+  const log = storage.get(K.checkLog, null);
+  if (!mayAutoCheck(match, log)) return;
+  storage.set(K.checkLog, nextLog(match, log));
+  checkNow();
+}
+
+// ---------- push subscription ----------
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
+async function currentSubscription() {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  // After a key rotation the old subscription can't receive our pushes any more.
+  const key = sub?.options?.applicationServerKey;
+  if (sub && key && new Uint8Array(key).join() !== keyBytes(VAPID_PUBLIC_KEY).join()) {
+    await sub.unsubscribe();
+    return null;
+  }
+  return sub;
+}
+
+async function enablePush() {
+  try {
+    if ((await Notification.requestPermission()) !== "granted") throw new Error("permission was not granted");
+    const reg = await navigator.serviceWorker.ready;
+    (await currentSubscription()) ?? (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(VAPID_PUBLIC_KEY) }));
+    renderPushBox();
+  } catch (err) {
+    toast(`Couldn't enable notifications: ${err.message}`);
+  }
+}
+
+async function renderPushBox() {
+  const el = $("#push-box");
+  if (!el) return;
+  if (!VAPID_PUBLIC_KEY) {
+    el.innerHTML = `<p class="small muted">Not set up yet: run <code>npm run setup:push</code> once (see the README).</p>`;
+    return;
+  }
+  if (!pushSupported()) {
+    el.innerHTML = `<p class="small muted">This browser can't receive push notifications. Install the app from Chrome.</p>`;
+    return;
+  }
+  const sub = await currentSubscription().catch(() => null);
+  if (!sub) {
+    el.innerHTML = `<div class="actions"><button class="btn primary block" data-action="push-enable">Enable notifications</button></div>`;
+    return;
+  }
+  const secrets = repo ? `https://github.com/${repo.owner}/${repo.repo}/settings/secrets/actions` : "";
+  el.innerHTML = `
+    <p class="small">Notifications are on for this device. The GitHub routine needs this device's address once:</p>
+    <ol class="small">
+      <li>Copy it: <button class="btn" data-action="push-copy">Copy</button></li>
+      <li>Save it as the repo secret <code>PUSH_SUBSCRIPTION</code>${secrets ? ` (<a href="${esc(secrets)}" target="_blank" rel="noopener">open secrets</a>)` : ""}.</li>
+      <li>Redo this only if you reinstall the app or clear its data.</li>
+    </ol>
+    <textarea class="field" id="push-sub" readonly aria-label="Push subscription">${esc(JSON.stringify(sub))}</textarea>`;
+}
+
+function renderCheckBox() {
+  const el = $("#check-box");
+  if (!el) return;
+  if (!repo) {
+    el.innerHTML = `<p class="small muted">Only available in the app deployed on GitHub Pages.</p>`;
+    return;
+  }
+  const tokenUrl = "https://github.com/settings/personal-access-tokens/new";
+  el.innerHTML = storage.get(K.token, "")
+    ? `<p class="small">Token saved on this device.</p>
+       <div class="actions">
+         <button class="btn block" data-action="check-now">Look for new recaps now</button>
+         <button class="btn block" data-action="test-push">Send a test notification</button>
+         <button class="btn block" data-action="token-remove">Remove token</button>
+       </div>`
+    : `<ol class="small">
+         <li><a href="${tokenUrl}" target="_blank" rel="noopener">Create a fine-grained token</a>: repository access <b>only ${esc(repo.repo)}</b>, permission <b>Actions: Read and write</b>, nothing else.</li>
+         <li>Paste it here. It's stored only on this device.</li>
+       </ol>
+       <input class="field" id="gh-token" type="password" autocomplete="off" placeholder="github_pat_…" aria-label="GitHub token">
+       <div class="actions"><button class="btn block" data-action="token-save">Save token</button></div>`;
+}
+
+async function saveToken() {
+  const token = $("#gh-token")?.value.trim();
+  if (!token) return;
+  storage.set(K.token, token);
+  try {
+    await github("GET", "actions/workflows/check.yml");
+    toast("Token saved");
+  } catch (err) {
+    storage.set(K.token, "");
+    toast(`Token not saved: ${err.message}`);
+  }
+  renderCheckBox();
+}
+
+async function testPush() {
+  toast("Sending a test notification… (about a minute)");
+  try {
+    await runWorkflow("test-notification");
+    toast("Test sent. No notification? Check PUSH_SUBSCRIPTION and the run log.");
+  } catch (err) {
+    toast(`Test failed: ${err.message}`);
+  }
 }
 
 // ---------- watched state ----------
@@ -190,7 +376,7 @@ function renderRecaps() {
 
   const openHtml = open.length
     ? `<div class="cards">${open.map(cardHtml).join("")}</div>`
-    : `<div class="empty"><span class="big">✅</span><strong>All caught up</strong>You'll get a notification as soon as the next Barça recap is on DAZN.</div>`;
+    : `<div class="empty"><span class="big">✅</span><strong>All caught up</strong>You'll get a notification the morning after the next Barça recap is on DAZN.</div>`;
 
   const limit = state.showAllWatched ? watched.length : 8;
   const watchedHtml = watched.length
@@ -375,12 +561,12 @@ function openSettings() {
     </label>
 
     <h3>Notifications</h3>
-    <p class="small">New recaps are pushed via the free <b>ntfy</b> app:</p>
-    <ol class="small">
-      <li>Install <b>ntfy</b> from the Play Store.</li>
-      <li>Tap <b>+</b> and subscribe to your private topic (see the README / setup output).</li>
-      <li>Tapping a notification opens the recap here; the <b>▶ YouTube</b> button opens it directly.</li>
-    </ol>
+    <p class="small">One notification in the morning when new recaps came out. Tapping it opens the recap here; <b>▶ YouTube</b> opens it directly.</p>
+    <div id="push-box"><p class="small muted">Loading…</p></div>
+
+    <h3>Late-night check</h3>
+    <p class="small">Recaps are looked for once a day. With a GitHub token, the app also looks right away when you open it after a match and the recap isn't here yet. Recaps found that way don't trigger a notification.</p>
+    <div id="check-box"></div>
 
     <h3>Watchlist</h3>
     <div class="actions">
@@ -390,8 +576,10 @@ function openSettings() {
     </div>
 
     <h3>About</h3>
-    <p class="small muted">Recaps from the DAZN Fußball YouTube channel, checked every 15 minutes. Standings &amp; fixtures from ESPN. Data last changed: ${esc(updated)}.</p>
+    <p class="small muted">Recaps from the DAZN Fußball YouTube channel, checked every morning. Standings &amp; fixtures from ESPN. Data last changed: ${esc(updated)}.</p>
     <div class="actions"><button class="btn block" data-action="close">Done</button></div>`);
+  renderPushBox();
+  renderCheckBox();
 
   $("#spoiler-toggle").addEventListener("change", (e) => {
     state.settings.spoilerFree = e.target.checked;
@@ -484,6 +672,36 @@ document.addEventListener("click", (e) => {
     case "export":
       exportBackup();
       break;
+    case "push-enable":
+      enablePush();
+      break;
+    case "push-copy": {
+      const text = $("#push-sub").value;
+      navigator.clipboard.writeText(text).then(
+        () => toast("Copied"),
+        () => {
+          $("#push-sub").select();
+          toast("Couldn't copy, select the text below instead");
+        },
+      );
+      break;
+    }
+    case "token-save":
+      saveToken();
+      break;
+    case "token-remove":
+      storage.set(K.token, "");
+      renderCheckBox();
+      toast("Token removed");
+      break;
+    case "check-now":
+      closeSheet();
+      checkNow();
+      break;
+    case "test-push":
+      closeSheet();
+      testPush();
+      break;
   }
 });
 
@@ -512,6 +730,7 @@ await loadVideos();
 render();
 // If the deep-linked recap isn't deployed yet, the focus sheet shows a fallback.
 handleDeepLink();
+maybeAutoCheck();
 
 try {
   navigator.storage?.persist?.();
