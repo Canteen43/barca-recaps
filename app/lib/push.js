@@ -1,6 +1,6 @@
 // Web Push settings shared by the app and the watcher. The public key is safe to publish;
 // its private half lives only in the VAPID_PRIVATE_KEY repo secret (see scripts/setup-push.mjs).
-export const VAPID_PUBLIC_KEY = "";
+export const VAPID_PUBLIC_KEY = "BIYk9dAcYogl0ZxWH82aQ5GlAJLwAe8_O_k0YxReiVBDWwzzTlGQPpyE9amzTJwPHVH7ILe6Es2sBtHJg-BcAPo";
 
 /** Converts the base64url public key into the byte array pushManager.subscribe() expects. */
 export function keyBytes(b64url) {
